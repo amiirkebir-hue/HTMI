@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Daria Local Chat</title>
+    <style>
+        body { font-family: Arial; background: #f0f2f5; }
+        #chat { width: 500px; margin: 20px auto; border: 1px solid #ccc; padding: 10px; background: #fff; height: 400px; overflow-y: scroll; }
+        #users { width: 150px; float: right; margin-right: 20px; }
+        #message { width: 400px; }
+        #send { width: 80px; }
+    </style>
+</head>
+<body>
+    <h2>Daria Local Chat</h2>
+    <div id="chat"></div>
+    <input type="text" id="message" placeholder="پیام خود را وارد کنید">
+    <button id="send">ارسال</button>
+    <div id="users">
+        <h4>کاربران متصل:</h4>
+        <ul id="user_list"></ul>
+    </div>
+
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+
+        // ارسال پیام
+        document.getElementById('send').onclick = () => {
+            const msg = document.getElementById('message').value;
+            if(msg) {
+                socket.emit('send_message', msg);
+                document.getElementById('message').value = '';
+            }
+        };
+
+        // دریافت پیام
+        socket.on('receive_message', msg => {
+            const chat = document.getElementById('chat');
+            const p = document.createElement('p');
+            p.textContent = msg;
+            chat.appendChild(p);
+            chat.scrollTop = chat.scrollHeight;
+        });
+
+        // دریافت لیست کاربران
+        socket.on('user_list', list => {
+            const ul = document.getElementById('user_list');
+            ul.innerHTML = '';
+            list.forEach(u => {
+                const li = document.createElement('li');
+                li.textContent = u;
+                ul.appendChild(li);
+            });
+        });
+    </script>
+</body>
+</html>
