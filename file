@@ -1,352 +1,135 @@
-# server.py
-from flask import Flask, Response, request
-from flask_socketio import SocketIO, emit
-import requests
-import re
+# updating_panel.py
+import tkinter as tk
+from tkinter import font as tkfont
+import time
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'daria_local_secure_key_please_change'
-socketio = SocketIO(app, cors_allowed_origins="*")
+def hex_to_rgb(h):
+    h = h.lstrip('#')
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-# URLs - change if needed
-HTML_URL = 'https://raw.githubusercontent.com/amiirkebir-hue/HTMI/refs/heads/main/DAI'
-USERLIST_URL = 'https://raw.githubusercontent.com/amiirkebir-hue/HTMI/refs/heads/main/username'
+def rgb_to_hex(rgb):
+    return '#{:02x}{:02x}{:02x}'.format(*rgb)
 
-# mapping of socket id -> username
-sid_to_user = {}
-online_users = set()
+def brighten(hexcolor, factor):
+    r, g, b = hex_to_rgb(hexcolor)
+    r = min(255, int(r * factor))
+    g = min(255, int(g * factor))
+    b = min(255, int(b * factor))
+    return rgb_to_hex((r, g, b))
 
-def fetch_user_pairs():
-    """
-    Fetch username:password pairs from your GitHub raw file.
-    Returns dict {username: password}
-    """
-    try:
-        r = requests.get(USERLIST_URL, timeout=5)
-        r.raise_for_status()
-        text = r.text
-        pairs = {}
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            # accept "user:pass" or "user : pass"
-            m = re.split(r'\s*:\s*', line, maxsplit=1)
-            if len(m) == 2:
-                user, pwd = m[0].strip(), m[1].strip()
-                if user:
-                    pairs[user] = pwd
-        return pairs
-    except Exception as e:
-        print("Failed to fetch user list:", e)
-        return {}
+# draw rounded rectangle on canvas
+def rounded_rect(canvas, x1, y1, x2, y2, r=20, **kwargs):
+    # corners
+    canvas.create_arc(x1, y1, x1+2*r, y1+2*r, start=90, extent=90, style='pieslice', **kwargs)
+    canvas.create_arc(x2-2*r, y1, x2, y1+2*r, start=0, extent=90, style='pieslice', **kwargs)
+    canvas.create_arc(x2-2*r, y2-2*r, x2, y2, start=270, extent=90, style='pieslice', **kwargs)
+    canvas.create_arc(x1, y2-2*r, x1+2*r, y2, start=180, extent=90, style='pieslice', **kwargs)
+    # edges
+    canvas.create_rectangle(x1+r, y1, x2-r, y2, **kwargs)
+    canvas.create_rectangle(x1, y1+r, x2, y2-r, **kwargs)
 
-def inject_auth_and_client(html_text):
-    """
-    Inject login UI, client-side auth, avatar and socket logic into fetched HTML.
-    We insert before </body>.
-    """
-    injection = r"""
-<!-- DariaChat: injected login + client script (English) -->
-<style>
-/* login overlay */
-#loginOverlay{
-  position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
-  background: rgba(13,13,43,0.75); z-index:9999;
-}
-.loginCard{
-  background:#fff; padding:22px; border-radius:12px; width:360px; box-shadow:0 8px 30px rgba(0,0,0,0.35);
-  font-family: "Segoe UI", sans-serif; color:#111;
-}
-.loginCard h2{margin:0 0 10px 0}
-.loginCard input{width:100%; padding:10px; margin:8px 0; border-radius:8px; border:1px solid #ddd}
-.loginCard button{width:100%; padding:10px; border-radius:8px; border:none; background:#5a60ff; color:white; cursor:pointer}
-.topProfile{
-  position: absolute; right: 18px; top: 12px; display:flex; align-items:center; gap:8px; z-index:5000;
-}
-.topProfile img{width:40px; height:40px; border-radius:50%; object-fit:cover; border:2px solid #fff}
-.topProfile .name{background: rgba(255,255,255,0.85); padding:6px 10px; border-radius:10px; font-size:14px}
-.message.you{ background:#d0e6ff; align-self:flex-end; color:#022; }
-.message.other{ background:#ececff; align-self:flex-start; color:#111; }
-.msgRow{ display:flex; gap:10px; align-items:flex-end; margin:6px 0; }
-.msgAvatar{ width:36px; height:36px; border-radius:50%; object-fit:cover; }
-.msgBubble{ padding:8px 12px; border-radius:12px; max-width:65%; word-wrap:break-word; }
-</style>
+class UpdatingPanel:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Update")
+        self.root.resizable(False, False)
 
-<div id="loginOverlay">
-  <div class="loginCard" id="loginCard">
-    <h2>Daria Local — Login</h2>
-    <input id="login_username" placeholder="Username" autocomplete="off">
-    <input id="login_password" placeholder="Password" type="password" autocomplete="off">
-    <div style="display:flex; gap:8px; margin-top:8px;">
-      <button id="btnLogin">Login</button>
-    </div>
-    <p id="login_msg" style="margin-top:10px;color:#c33"></p>
-    <p style="font-size:12px;color:#666;margin-top:8px">User credentials are read from the repository file (read-only).</p>
-  </div>
-</div>
+        # center the window
+        w, h = 520, 300
+        ws = root.winfo_screenwidth()
+        hs = root.winfo_screenheight()
+        x = (ws // 2) - (w // 2)
+        y = (hs // 2) - (h // 2)
+        root.geometry(f"{w}x{h}+{x}+{y}")
 
-<div class="topProfile" id="topProfile" style="display:none;">
-  <img id="topAvatar" src="" alt="avatar">
-  <div class="name" id="topName"></div>
-</div>
+        # overall bg
+        bg = "#eaf4ff"
+        root.configure(bg=bg)
 
-<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
-<script>
-(() => {
-  // config
-  const LOGIN_URL = '/api/login';
-  // helpers
-  const $ = id => document.getElementById(id);
+        # canvas to draw a rounded panel
+        self.canvas = tk.Canvas(root, width=w, height=h, highlightthickness=0, bg=bg)
+        self.canvas.pack(fill="both", expand=True)
 
-  // localStorage keys
-  const LS_USER = 'daria_user';
-  const LS_AVATAR = 'daria_avatar'; // base64 data url
+        # panel colors
+        self.base_color = "#1976d2"      # primary blue
+        self.panel_color = "#1e88e5"     # panel slightly lighter
+        self.panel_id = None
 
-  // elements
-  const overlay = $('loginOverlay');
-  const loginMsg = $('login_msg');
-  const btnLogin = $('btnLogin');
+        # draw panel (rounded rect)
+        padding = 30
+        self.panel_coords = (padding, padding, w - padding, h - padding)
+        rounded_rect(self.canvas, *self.panel_coords, r=20, fill=self.panel_color, outline="")
 
-  // check if already logged in in localStorage
-  let storedUser = localStorage.getItem(LS_USER);
-  if (storedUser) {
-    // we still validate server-side to be safe
-    attemptAutoLogin(storedUser);
-  }
+        # shadow (soft simple effect)
+        # a slightly darker strip at bottom
+        self.canvas.create_rectangle(padding+8, h - padding - 8, w - padding-8, h - padding, fill=brighten(self.panel_color, 0.85), outline="")
 
-  btnLogin.onclick = () => {
-    const user = $('login_username').value.trim();
-    const pass = $('login_password').value;
-    if (!user || !pass) { loginMsg.textContent = 'Please enter username and password.'; return; }
-    fetch(LOGIN_URL, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({username: user, password: pass})
-    }).then(r => r.json()).then(j => {
-      if (j && j.status === 'ok') {
-        localStorage.setItem(LS_USER, user);
-        loginMsg.style.color = 'green';
-        loginMsg.textContent = 'Login successful. Preparing chat...';
-        setTimeout(() => startChat(user), 600);
-      } else {
-        loginMsg.style.color = '#c33';
-        loginMsg.textContent = j && j.message ? j.message : 'Login failed';
-      }
-    }).catch(e => {
-      loginMsg.style.color = '#c33';
-      loginMsg.textContent = 'Login error: ' + e;
-    });
-  };
+        # fonts
+        self.title_font = tkfont.Font(family="Segoe UI", size=20, weight="bold")
+        self.msg_font = tkfont.Font(family="Segoe UI", size=14)
+        self.small_font = tkfont.Font(family="Segoe UI", size=11)
 
-  function attemptAutoLogin(user){
-    // try to login with empty password to check? better ask server to just validate existence
-    fetch(LOGIN_URL, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({username: user, password: '__local_check__'})
-    }).then(r => r.json()).then(j => {
-      if (j && j.status === 'ok') startChat(user);
-      else {
-        // clear stored user if not valid
-        localStorage.removeItem(LS_USER);
-        overlay.style.display = 'flex';
-      }
-    }).catch(_=>{
-      overlay.style.display = 'flex';
-    });
-  }
+        # add texts (centered)
+        cx = w // 2
+        cy = h // 2 - 10
+        self.title_text_id = self.canvas.create_text(cx, cy-30, text="We're sorry", font=self.title_font, fill="white")
+        self.msg_text_id = self.canvas.create_text(cx, cy+0, text="We are currently updating", font=self.msg_font, fill="white")
+        self.dots_text_id = self.canvas.create_text(cx, cy+40, text="", font=self.small_font, fill="#dbeeff")
 
-  // chat state
-  let socket = null;
-  let currentUser = null;
+        # optional small note
+        self.note_id = self.canvas.create_text(cx, h - padding - 18, text="Thank you for your patience.", font=self.small_font, fill="#dbeeff")
 
-  function startChat(user){
-    currentUser = user;
-    overlay.style.display = 'none';
+        # animation state
+        self.dot_count = 0
+        self.pulse_direction = 1
+        self.pulse_factor = 1.0
 
-    // show profile area
-    const top = $('topProfile'); const topName = $('topName'); const topAvatar = $('topAvatar');
-    top.style.display = 'flex';
-    topName.textContent = currentUser;
+        # start animations
+        self.animate_dots()
+        self.animate_pulse()
 
-    // load avatar from localStorage or ask user to upload
-    let avatarData = localStorage.getItem(LS_AVATAR);
-    if (!avatarData) {
-      // ask user to pick avatar (file input)
-      const inp = document.createElement('input');
-      inp.type = 'file'; inp.accept = 'image/*';
-      inp.onchange = () => {
-        const f = inp.files[0];
-        if (!f) return;
-        const reader = new FileReader();
-        reader.onload = e => {
-          const dataUrl = e.target.result;
-          localStorage.setItem(LS_AVATAR, dataUrl);
-          topAvatar.src = dataUrl;
-          avatarData = dataUrl;
-        };
-        reader.readAsDataURL(f);
-      };
-      // prompt once
-      inp.click();
-    } else {
-      topAvatar.src = avatarData;
-    }
+        # close on Escape
+        root.bind("<Escape>", lambda e: root.destroy())
 
-    // allow clicking avatar to change
-    $('topProfile').onclick = () => {
-      const inp = document.createElement('input');
-      inp.type = 'file'; inp.accept = 'image/*';
-      inp.onchange = () => {
-        const f = inp.files[0];
-        if (!f) return;
-        const reader = new FileReader();
-        reader.onload = e => {
-          const dataUrl = e.target.result;
-          localStorage.setItem(LS_AVATAR, dataUrl);
-          topAvatar.src = dataUrl;
-        };
-        reader.readAsDataURL(f);
-      };
-      inp.click();
-    };
+    def animate_dots(self):
+        # animate ... after text
+        self.dot_count = (self.dot_count + 1) % 4  # 0..3
+        dots = "." * self.dot_count
+        self.canvas.itemconfigure(self.dots_text_id, text="Updating" + dots)
+        self.root.after(500, self.animate_dots)
 
-    // connect socket
-    socket = io();
+    def animate_pulse(self):
+        # gentle pulse of panel color
+        # vary pulse_factor between 0.95 and 1.05
+        if self.pulse_direction == 1:
+            self.pulse_factor += 0.01
+            if self.pulse_factor > 1.05:
+                self.pulse_direction = -1
+        else:
+            self.pulse_factor -= 0.01
+            if self.pulse_factor < 0.95:
+                self.pulse_direction = 1
 
-    socket.on('connect', () => {
-      // tell server who we are
-      socket.emit('join', currentUser);
-    });
+        new_color = brighten(self.panel_color, self.pulse_factor)
+        # redraw rounded rect by creating a new one and deleting the old
+        # (simpler than trying to change fill of complex items)
+        # remove all panel-shaped items (we know approximate order)
+        # For simplicity, just clear and redraw everything dependent on panel
+        self.canvas.delete("panel")  # we'll tag the new shapes with "panel"
+        x1, y1, x2, y2 = self.panel_coords
+        # new rounded rect with tag
+        rounded_rect(self.canvas, x1, y1, x2, y2, r=20, fill=new_color, outline="", )
+        # re-create the shadow rectangle and tag it too
+        self.canvas.create_rectangle(x1+8, y2-8, x2-8, y2-8+8, fill=brighten(new_color, 0.85), outline="", tags=("panel",))
+        # re-place text on top (texts were not deleted, but ensure they are above)
+        self.canvas.tag_raise(self.title_text_id)
+        self.canvas.tag_raise(self.msg_text_id)
+        self.canvas.tag_raise(self.dots_text_id)
+        self.canvas.tag_raise(self.note_id)
 
-    socket.on('user_list', list => {
-      // update top UI user count (or wherever)
-      const cntEl = document.querySelector('#user_count');
-      if (cntEl) cntEl.textContent = list.length;
-    });
+        self.root.after(40, self.animate_pulse)
 
-    socket.on('receive_message', obj => {
-      // obj: { username, avatar, text }
-      renderMessage(obj);
-    });
-
-    // wire send button and enter key
-    const sendBtn = document.querySelector('#send');
-    const msgInput = document.querySelector('#message');
-    sendBtn && sendBtn.addEventListener('click', sendMessage);
-    msgInput && msgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });
-
-    function sendMessage(){
-      const txt = msgInput.value.trim();
-      if (!txt) return;
-      const avatar = localStorage.getItem(LS_AVATAR) || '';
-      socket.emit('send_message', { username: currentUser, avatar: avatar, text: txt });
-      msgInput.value = '';
-    }
-
-    // expose render for existing messages
-    function renderMessage(obj){
-      const messages = document.querySelector('#messages');
-      if (!messages) return;
-      const row = document.createElement('div');
-      row.className = 'msgRow';
-
-      const isMe = obj.username === currentUser;
-
-      if (!isMe){
-        // avatar left
-        const img = document.createElement('img');
-        img.className = 'msgAvatar';
-        img.src = obj.avatar || '';
-        row.appendChild(img);
-        const bubble = document.createElement('div');
-        bubble.className = 'msgBubble message other';
-        bubble.textContent = obj.username + ': ' + obj.text;
-        row.appendChild(bubble);
-      } else {
-        // my message: bubble first then avatar on right
-        const bubble = document.createElement('div');
-        bubble.className = 'msgBubble message you';
-        bubble.textContent = 'You: ' + obj.text;
-        row.appendChild(bubble);
-        const img = document.createElement('img');
-        img.className = 'msgAvatar';
-        img.src = obj.avatar || '';
-        row.appendChild(img);
-        row.style.justifyContent = 'flex-end';
-      }
-
-      messages.appendChild(row);
-      messages.scrollTop = messages.scrollHeight;
-    }
-  }
-})();
-</script>
-<!-- end injection -->
-"""
-    # insert before closing </body>
-    if '</body>' in html_text:
-        return html_text.replace('</body>', injection + '\n</body>', 1)
-    else:
-        return html_text + injection
-
-@app.route('/api/login', methods=['POST'])
-def api_login():
-    data = request.get_json(force=True)
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
-    # fetch list from github
-    pairs = fetch_user_pairs()
-    if username in pairs and pairs[username] == password:
-        return {"status": "ok", "message": "Login successful"}
-    # Some clients use '__local_check__' to validate existence without password; allow that if username exists
-    if password == '__local_check__' and username in pairs:
-        return {"status": "ok", "message": "User exists"}
-    return {"status": "error", "message": "Invalid username or password"}
-
-@app.route('/')
-def index():
-    try:
-        r = requests.get(HTML_URL, timeout=5)
-        r.raise_for_status()
-        html = r.text
-    except Exception as e:
-        # fallback simple page if template can't be fetched
-        html = """
-        <!doctype html><html><head><meta charset="utf-8"><title>Daria Local</title></head>
-        <body><h2>Could not load remote template. Falling back to default UI.</h2><div id="chat"></div></body></html>
-        """
-    injected = inject_auth_and_client(html)
-    return Response(injected, mimetype='text/html')
-
-# Socket handlers
-@socketio.on('join')
-def on_join(username):
-    sid = request.sid
-    sid_to_user[sid] = username
-    online_users.add(username)
-    emit('user_list', list(online_users), broadcast=True)
-    print(f"{username} joined (sid={sid})")
-
-@socketio.on('disconnect')
-def on_disconnect():
-    sid = request.sid
-    username = sid_to_user.get(sid)
-    if username:
-        online_users.discard(username)
-        sid_to_user.pop(sid, None)
-        emit('user_list', list(online_users), broadcast=True)
-        print(f"{username} disconnected (sid={sid})")
-
-@socketio.on('send_message')
-def on_message(obj):
-    # obj expected: { username, avatar, text }
-    username = obj.get('username', 'Unknown')
-    text = obj.get('text', '')
-    avatar = obj.get('avatar', '')
-    # broadcast the whole object
-    emit('receive_message', {'username': username, 'avatar': avatar, 'text': text}, broadcast=True)
-
-if __name__ == '__main__':
-    socketio.run(app, host='127.0.0.1', port=5000)
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = UpdatingPanel(root)
+    root.mainloop()
